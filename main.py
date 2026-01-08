@@ -1,45 +1,57 @@
 import os
 import sys
-import pandas as pd # Library to read Excel
+import pandas as pd
 from flask import Flask, render_template_string, request, jsonify
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# CONFIG
+# --- CONFIGURATION FROM RENDER ---
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 MY_PHONE_NUMBER = os.environ.get("MY_PHONE_NUMBER")
+
+# NEW: Get Model Name from Environment (Default to flash if not set)
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # SETUP AI
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    print(f"--- STARTING BOT WITH MODEL: {MODEL_NAME} ---", flush=True)
+    model = genai.GenerativeModel(MODEL_NAME)
 else:
     print("WARNING: GEMINI_API_KEY is missing!", file=sys.stderr)
 
 # --- FUNCTION TO LOAD EXCEL ---
 def load_products_from_excel():
     try:
-        # Read the Excel file
+        # Check if file exists first
+        if not os.path.exists('product.xlsx'):
+            return "Error: product.xlsx file not found on server."
+            
         df = pd.read_excel('product.xlsx')
         
-        # Convert it to a text string format that the AI understands
         product_text = ""
         for index, row in df.iterrows():
+            # Check for NaN (Empty cells) to prevent errors
+            p_name = row['Product Name'] if pd.notna(row['Product Name']) else "Unknown"
+            p_price = row['Price'] if pd.notna(row['Price']) else "$0"
+            p_desc = row['Description'] if pd.notna(row['Description']) else ""
+            p_img = row['Image URL'] if pd.notna(row['Image URL']) else ""
+            
             product_text += f"""
-            {row['Product Type']} ITEM #{row['Number']}: {row['Product Name']} ({row['Price']})
-            - Desc: {row['Description']}
+            ITEM #{row['Number']}: {p_name} ({p_price})
+            - Desc: {p_desc}
             - Ingredients: {row['Ingredient']}
-            - Image: {row['Image URL']}
+            - Image: {p_img}
             - Note: {row['Remarks']}
             --------------------------------
             """
         return product_text
     except Exception as e:
-        print(f"Error reading Excel: {e}")
+        print(f"Error reading Excel: {e}", flush=True)
         return "Error loading product list."
 
-# Load the data when the app starts
+# Load data on startup
 PRODUCT_DATA = load_products_from_excel()
 
 # HTML UI
@@ -97,8 +109,6 @@ HTML_PAGE = """
                 });
 
                 const data = await response.json();
-                
-                // Allow HTML (for Images)
                 addBotMessageHTML(data.reply);
 
                 if (data.is_order) {
@@ -111,7 +121,7 @@ HTML_PAGE = """
                 }
             } catch (error) {
                 console.error("Error:", error);
-                addMessage("Error: Could not connect.", 'error');
+                addMessage("Error: Connection Failed.", 'error');
             }
         }
 
@@ -126,7 +136,7 @@ HTML_PAGE = """
         function addBotMessageHTML(htmlContent) {
             const div = document.createElement('div');
             div.className = `message bot`;
-            div.innerHTML = htmlContent; 
+            div.innerHTML = htmlContent;
             chatBox.appendChild(div);
             chatBox.scrollTop = chatBox.scrollHeight;
         }
@@ -145,9 +155,9 @@ def chat():
         data = request.json
         user_msg = data.get('message')
         
-        # RELOAD DATA (Optional: Remove this line if you want to load only once on restart)
-        # Keeping it here ensures if you upload a new Excel, it updates faster.
-        current_products = load_products_from_excel()
+        # Reload Excel on every message? 
+        # Uncomment the next line if you want instant updates without restarting Render
+        # PRODUCT_DATA = load_products_from_excel()
 
         system_instruction = f"""
         You are the sales assistant for 'The Pet Bakery'.
@@ -158,7 +168,7 @@ def chat():
         3. If showing a product, you MUST display the image using: <br><img src="URL"><br>
         
         CURRENT MENU:
-        {current_products}
+        {PRODUCT_DATA}
         
         If user orders:
         1. Get Date, Flavor, Quantity.
@@ -182,7 +192,7 @@ def chat():
 
     except Exception as e:
         print(f"ERROR: {e}", flush=True)
-        return jsonify({"reply": "System Error."}), 500
+        return jsonify({"reply": "My oven is overheating! (System Error)"}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
