@@ -13,7 +13,7 @@ MY_PHONE_NUMBER = os.environ.get("MY_PHONE_NUMBER")
 # SETUP AI
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel('gemini-3-pro-preview')
+    model = genai.GenerativeModel('gemini-3-flash-preview')
 else:
     print("WARNING: GEMINI_API_KEY is missing!", file=sys.stderr)
 
