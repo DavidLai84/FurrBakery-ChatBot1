@@ -10,7 +10,7 @@ MY_PHONE_NUMBER = os.environ.get("MY_PHONE_NUMBER") # Your number (e.g., 6012345
 
 # 2. CONFIGURE GEMINI
 genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+model = genai.GenerativeModel('gemini-3-flash')
 
 # 3. THE HTML UI (The Chat Window)
 # We put HTML inside Python to keep it in one file for simplicity
