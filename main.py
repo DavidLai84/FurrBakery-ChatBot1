@@ -1,19 +1,23 @@
 import os
+import sys
 from flask import Flask, render_template_string, request, jsonify
 import google.generativeai as genai
 
 app = Flask(__name__)
 
-# 1. SETUP API KEY (From Render Environment Variables)
+# CONFIG
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-MY_PHONE_NUMBER = os.environ.get("MY_PHONE_NUMBER") # Your number (e.g., 60123456789)
+MY_PHONE_NUMBER = os.environ.get("MY_PHONE_NUMBER")
 
-# 2. CONFIGURE GEMINI
-genai.configure(api_key=GEMINI_KEY)
-model = genai.GenerativeModel('gemini-3-flash-preview')
+# SETUP AI
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    # Using the Flash model (Faster/Cheaper)
+    model = genai.GenerativeModel('gemini-3-flash-preview')
+else:
+    print("WARNING: GEMINI_API_KEY is missing!", file=sys.stderr)
 
-# 3. THE HTML UI (The Chat Window)
-# We put HTML inside Python to keep it in one file for simplicity
+# HTML UI with "Enter Key" Support
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -26,8 +30,9 @@ HTML_PAGE = """
         .message { margin: 10px 0; padding: 10px; border-radius: 10px; }
         .user { background: #dcf8c6; text-align: right; margin-left: 20%; }
         .bot { background: #e9e9eb; text-align: left; margin-right: 20%; }
+        .error { background: #ffcccc; text-align: center; color: red; }
         .input-area { margin-top: 15px; display: flex; gap: 10px; }
-        input { flex: 1; padding: 10px; border-radius: 20px; border: 1px solid #ccc; }
+        input { flex: 1; padding: 10px; border-radius: 20px; border: 1px solid #ccc; font-size: 16px; }
         button { padding: 10px 20px; background: #25D366; color: white; border: none; border-radius: 20px; cursor: pointer; }
         .wa-btn { display: block; width: 100%; background: #25D366; color: white; text-align: center; padding: 10px; margin-top: 10px; text-decoration: none; border-radius: 10px; font-weight: bold; }
     </style>
@@ -42,36 +47,49 @@ HTML_PAGE = """
 
     <script>
         const chatBox = document.getElementById('chat-box');
+        const inputField = document.getElementById('user-input');
+
+        // LISTEN FOR ENTER KEY
+        inputField.addEventListener("keypress", function(event) {
+            if (event.key === "Enter") {
+                event.preventDefault(); // Stop screen from refreshing
+                sendMessage();
+            }
+        });
         
         async function sendMessage() {
-            const input = document.getElementById('user-input');
-            const text = input.value;
+            const text = inputField.value;
             if (!text) return;
 
-            // Show User Message
             addMessage(text, 'user');
-            input.value = '';
+            inputField.value = ''; // Clear box immediately
 
-            // Send to Server
-            const response = await fetch('/chat', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({ message: text })
-            });
-            const data = await response.json();
+            try {
+                // Send to Server
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ message: text })
+                });
 
-            // Show Bot Message
-            addMessage(data.reply, 'bot');
+                if (!response.ok) {
+                    throw new Error("Server Error: " + response.status);
+                }
 
-            // If AI detects order is ready, show WhatsApp Button
-            if (data.is_order) {
-                const btn = document.createElement('a');
-                btn.className = 'wa-btn';
-                // This link opens WhatsApp on their phone and messages YOU
-                btn.href = `https://wa.me/{{ my_number }}?text=${encodeURIComponent(data.order_summary)}`;
-                btn.innerText = "CONFIRM ORDER ON WHATSAPP";
-                chatBox.appendChild(btn);
-                chatBox.scrollTop = chatBox.scrollHeight;
+                const data = await response.json();
+                addMessage(data.reply, 'bot');
+
+                if (data.is_order) {
+                    const btn = document.createElement('a');
+                    btn.className = 'wa-btn';
+                    btn.href = `https://wa.me/{{ my_number }}?text=${encodeURIComponent(data.order_summary)}`;
+                    btn.innerText = "CONFIRM ORDER ON WHATSAPP";
+                    chatBox.appendChild(btn);
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                addMessage("Error: " + error.message, 'error');
             }
         }
 
@@ -93,40 +111,40 @@ def home():
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    user_msg = request.json.get('message')
-    
-    # SYSTEM PROMPT: TEACH THE AI WHO IT IS
-    # This instructs the AI to detect when to close the deal
-    system_instruction = f"""
-    You are a helpful sales assistant for 'My Shop'.
-    We sell: Red Shoes ($50), Blue Shirts ($20).
-    Answer questions briefly.
-    
-    IMPORTANT LOGIC:
-    If the user confirms they want to buy or place an order:
-    1. Start your reply with "ORDER_CONFIRMED:"
-    2. Then write a short summary of the order.
-    3. Example: "ORDER_CONFIRMED: I would like to buy 1 Red Shoe."
-    
-    If they are just chatting, just reply normally.
-    """
-    
-    full_prompt = f"{system_instruction}\nUser: {user_msg}\nAssistant:"
-    
-    response = model.generate_content(full_prompt)
-    ai_text = response.text
-    
-    # Check if AI triggered the order
-    is_order = False
-    order_summary = ""
-    
-    if "ORDER_CONFIRMED:" in ai_text:
-        is_order = True
-        # Clean up the text so the user sees a nice message
-        order_summary = ai_text.replace("ORDER_CONFIRMED:", "").strip()
-        ai_text = "Great! Click the button below to send your order details to our WhatsApp."
+    print("--- MSG RECEIVED ---", flush=True)
+    try:
+        data = request.json
+        user_msg = data.get('message')
+        
+        if not model:
+            return jsonify({"reply": "System Error: AI model not loaded."}), 500
+        
+        # SYSTEM PROMPT
+        # Edit this text to change your shop's behavior!
+        system_instruction = """
+        You are a helpful sales assistant.
+        If user confirms order, start reply with "ORDER_CONFIRMED:".
+        Otherwise answer briefly.
+        """
+        
+        full_prompt = f"{system_instruction}\nUser: {user_msg}\nAssistant:"
+        
+        response = model.generate_content(full_prompt)
+        ai_text = response.text
+        
+        is_order = False
+        order_summary = ""
+        
+        if "ORDER_CONFIRMED:" in ai_text:
+            is_order = True
+            order_summary = ai_text.replace("ORDER_CONFIRMED:", "").strip()
+            ai_text = "Click below to send this to WhatsApp."
 
-    return jsonify({"reply": ai_text, "is_order": is_order, "order_summary": order_summary})
+        return jsonify({"reply": ai_text, "is_order": is_order, "order_summary": order_summary})
+
+    except Exception as e:
+        print(f"ERROR: {e}", flush=True)
+        return jsonify({"reply": "I am having trouble thinking right now."}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
