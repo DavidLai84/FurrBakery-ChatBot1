@@ -1,5 +1,6 @@
 import os
 import sys
+import pandas as pd # Library to read Excel
 from flask import Flask, render_template_string, request, jsonify
 import google.generativeai as genai
 
@@ -12,36 +13,61 @@ MY_PHONE_NUMBER = os.environ.get("MY_PHONE_NUMBER")
 # SETUP AI
 if GEMINI_KEY:
     genai.configure(api_key=GEMINI_KEY)
-    # Using the Flash model (Faster/Cheaper)
-    model = genai.GenerativeModel('gemini-3-flash-preview')
+    model = genai.GenerativeModel('gemini-3-pro-preview')
 else:
     print("WARNING: GEMINI_API_KEY is missing!", file=sys.stderr)
 
-# HTML UI with "Enter Key" Support
+# --- FUNCTION TO LOAD EXCEL ---
+def load_products_from_excel():
+    try:
+        # Read the Excel file
+        df = pd.read_excel('product.xlsx')
+        
+        # Convert it to a text string format that the AI understands
+        product_text = ""
+        for index, row in df.iterrows():
+            product_text += f"""
+            {row['Product Type']} ITEM #{row['Number']}: {row['Product Name']} ({row['Price']})
+            - Desc: {row['Description']}
+            - Ingredients: {row['Ingredient']}
+            - Image: {row['Image URL']}
+            - Note: {row['Remarks']}
+            --------------------------------
+            """
+        return product_text
+    except Exception as e:
+        print(f"Error reading Excel: {e}")
+        return "Error loading product list."
+
+# Load the data when the app starts
+PRODUCT_DATA = load_products_from_excel()
+
+# HTML UI
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>My AI Assistant</title>
+    <title>Pet Bakery Chat</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #f0f2f5; }
-        #chat-box { height: 400px; overflow-y: scroll; background: white; padding: 15px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-        .message { margin: 10px 0; padding: 10px; border-radius: 10px; }
-        .user { background: #dcf8c6; text-align: right; margin-left: 20%; }
-        .bot { background: #e9e9eb; text-align: left; margin-right: 20%; }
-        .error { background: #ffcccc; text-align: center; color: red; }
+        body { font-family: 'Segoe UI', sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #fff5e6; }
+        h2 { text-align: center; color: #8B4513; }
+        #chat-box { height: 450px; overflow-y: scroll; background: white; padding: 15px; border-radius: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        .message { margin: 10px 0; padding: 12px; border-radius: 15px; max-width: 80%; line-height: 1.4; }
+        .user { background: #8B4513; color: white; margin-left: auto; text-align: right; border-bottom-right-radius: 2px; }
+        .bot { background: #f0f0f0; color: #333; margin-right: auto; text-align: left; border-bottom-left-radius: 2px; }
+        .bot img { max-width: 100%; border-radius: 10px; margin-top: 5px; border: 2px solid #ddd; }
         .input-area { margin-top: 15px; display: flex; gap: 10px; }
-        input { flex: 1; padding: 10px; border-radius: 20px; border: 1px solid #ccc; font-size: 16px; }
-        button { padding: 10px 20px; background: #25D366; color: white; border: none; border-radius: 20px; cursor: pointer; }
-        .wa-btn { display: block; width: 100%; background: #25D366; color: white; text-align: center; padding: 10px; margin-top: 10px; text-decoration: none; border-radius: 10px; font-weight: bold; }
+        input { flex: 1; padding: 12px; border-radius: 25px; border: 1px solid #ccc; font-size: 16px; outline: none; }
+        button { padding: 10px 25px; background: #E67E22; color: white; border: none; border-radius: 25px; cursor: pointer; font-weight: bold; }
+        .wa-btn { display: block; width: 100%; background: #25D366; color: white; text-align: center; padding: 12px; margin-top: 10px; text-decoration: none; border-radius: 10px; font-weight: bold; box-sizing: border-box; }
     </style>
 </head>
 <body>
-    <h2>Chat with us</h2>
+    <h2>🐶 The Pet Bakery 🐱</h2>
     <div id="chat-box"></div>
     <div class="input-area">
-        <input type="text" id="user-input" placeholder="Ask about products...">
+        <input type="text" id="user-input" placeholder="Ask about our cakes...">
         <button onclick="sendMessage()">Send</button>
     </div>
 
@@ -49,10 +75,9 @@ HTML_PAGE = """
         const chatBox = document.getElementById('chat-box');
         const inputField = document.getElementById('user-input');
 
-        // LISTEN FOR ENTER KEY
         inputField.addEventListener("keypress", function(event) {
             if (event.key === "Enter") {
-                event.preventDefault(); // Stop screen from refreshing
+                event.preventDefault();
                 sendMessage();
             }
         });
@@ -62,34 +87,31 @@ HTML_PAGE = """
             if (!text) return;
 
             addMessage(text, 'user');
-            inputField.value = ''; // Clear box immediately
+            inputField.value = '';
 
             try {
-                // Send to Server
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({ message: text })
                 });
 
-                if (!response.ok) {
-                    throw new Error("Server Error: " + response.status);
-                }
-
                 const data = await response.json();
-                addMessage(data.reply, 'bot');
+                
+                // Allow HTML (for Images)
+                addBotMessageHTML(data.reply);
 
                 if (data.is_order) {
                     const btn = document.createElement('a');
                     btn.className = 'wa-btn';
                     btn.href = `https://wa.me/{{ my_number }}?text=${encodeURIComponent(data.order_summary)}`;
-                    btn.innerText = "CONFIRM ORDER ON WHATSAPP";
+                    btn.innerText = "CLICK TO CONFIRM ORDER (WhatsApp)";
                     chatBox.appendChild(btn);
                     chatBox.scrollTop = chatBox.scrollHeight;
                 }
             } catch (error) {
                 console.error("Error:", error);
-                addMessage("Error: " + error.message, 'error');
+                addMessage("Error: Could not connect.", 'error');
             }
         }
 
@@ -97,6 +119,14 @@ HTML_PAGE = """
             const div = document.createElement('div');
             div.className = `message ${type}`;
             div.innerText = text;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function addBotMessageHTML(htmlContent) {
+            const div = document.createElement('div');
+            div.className = `message bot`;
+            div.innerHTML = htmlContent; 
             chatBox.appendChild(div);
             chatBox.scrollTop = chatBox.scrollHeight;
         }
@@ -111,20 +141,28 @@ def home():
 
 @app.route('/chat', methods=['POST'])
 def chat():
-    print("--- MSG RECEIVED ---", flush=True)
     try:
         data = request.json
         user_msg = data.get('message')
         
-        if not model:
-            return jsonify({"reply": "System Error: AI model not loaded."}), 500
+        # RELOAD DATA (Optional: Remove this line if you want to load only once on restart)
+        # Keeping it here ensures if you upload a new Excel, it updates faster.
+        current_products = load_products_from_excel()
+
+        system_instruction = f"""
+        You are the sales assistant for 'The Pet Bakery'.
         
-        # SYSTEM PROMPT
-        # Edit this text to change your shop's behavior!
-        system_instruction = """
-        You are a helpful sales assistant.
-        If user confirms order, start reply with "ORDER_CONFIRMED:".
-        Otherwise answer briefly.
+        RULES:
+        1. NO READY STOCK. ALL ORDERS REQUIRE 3-5 DAYS ADVANCE NOTICE.
+        2. Only sell items from the list below.
+        3. If showing a product, you MUST display the image using: <br><img src="URL"><br>
+        
+        CURRENT MENU:
+        {current_products}
+        
+        If user orders:
+        1. Get Date, Flavor, Quantity.
+        2. Start reply with "ORDER_CONFIRMED:" followed by summary.
         """
         
         full_prompt = f"{system_instruction}\nUser: {user_msg}\nAssistant:"
@@ -138,13 +176,13 @@ def chat():
         if "ORDER_CONFIRMED:" in ai_text:
             is_order = True
             order_summary = ai_text.replace("ORDER_CONFIRMED:", "").strip()
-            ai_text = "Click below to send this to WhatsApp."
+            ai_text = "Perfect! Click below to send your order via WhatsApp."
 
         return jsonify({"reply": ai_text, "is_order": is_order, "order_summary": order_summary})
 
     except Exception as e:
         print(f"ERROR: {e}", flush=True)
-        return jsonify({"reply": "I am having trouble thinking right now."}), 500
+        return jsonify({"reply": "System Error."}), 500
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=10000)
